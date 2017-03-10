@@ -30,7 +30,7 @@ using System.Threading.Tasks;
 
 
 
-namespace Pepsin
+namespace ScreenCaptureServer.Server
 {
     /// <summary>
     /// Pepsin is a middleware that implements Digest Auth without using Microsoft Active Directory
@@ -55,6 +55,8 @@ namespace Pepsin
         // authenticated request. 
         private System.Net.HttpListener m_listener;
 
+        private System.Security.Cryptography.MD5Cng m_MD5Encoder;
+
         /// <summary>
         /// Add a registered user to the server's whitelist. By default a new user doesn't have any realms
         /// </summary>
@@ -62,37 +64,50 @@ namespace Pepsin
         /// <param name="password">password (in plaintext)</param>
         public void addUser(string username, string password)
         {
-
+            /// TODO : Exception handling for already existing users. 
+            m_users.Add(username, password);
         }
 
         public void removeUser(string username)
         {
-
+            /// TODO : Exception handling for non-existing users
+            m_users.Remove(username);
         }
 
         public void changePassword(string username, string newPassword)
         {
-
+            /// TODO : Exception handling for non-existing users
+            m_users.Remove(username);
+            m_users.Add(username, newPassword);
         }
 
         public void addRealm(string realm)
         {
-
+            // Only a collection of realms, no attached value for now. 
+            m_realms.Add(realm, "");
         }
 
         public void removeRealm(string realm)
         {
-
+            m_realms.Remove(realm);
         }
 
         public void addPermission(string user, string[] desiredRealms)
         {
-
+            /// TODO : Check realms for validity
+            m_userRealms.Add(user, desiredRealms);
         }
 
-        Pepsin(System.Net.HttpListener listener)
+        public Pepsin(System.Net.HttpListener listener )
         {
             m_listener = listener;
+
+            m_nonces = new Dictionary<string, string>();
+            m_realms = new Dictionary<string, string>();
+            m_userRealms = new Dictionary<string, string[]>();
+            m_users = new Dictionary<string, string>();
+
+            m_MD5Encoder = new System.Security.Cryptography.MD5Cng();
         }
 
         /// <summary>
@@ -126,15 +141,98 @@ namespace Pepsin
             else // An Authorization header was present, there is digest data to analyse. 
             {
                 Dictionary<string, string> requestParams = parseHeader(context.Request.Headers["Authorization"]);
+
+                
+
+                string username = requestParams["username"];
+
+                Console.WriteLine(requestParams["realm"]);
+                Console.WriteLine(m_users[username]);
+
+                string clientHA1StringData = username + ":" + requestParams["realm"] + ":" + m_users[username];
+
+                Console.WriteLine("HA1 = M(" + clientHA1StringData + ")");
+
+                /// TODO : Only GET is supported right now
+
+                string clientHA2StringData = "GET:" + requestParams["uri"];
+
+                Console.WriteLine("HA2 = M(" + clientHA2StringData + ")");
+
+                byte[] clientHA1 = m_MD5Encoder.ComputeHash(System.Text.Encoding.ASCII.GetBytes(clientHA1StringData));
+                byte[] clientHA2 = m_MD5Encoder.ComputeHash(System.Text.Encoding.ASCII.GetBytes(clientHA2StringData));
+
+                string clientHA1String = BitConverter.ToString(clientHA1);
+                clientHA1String = clientHA1String.ToLower();
+                clientHA1String = clientHA1String.Replace("-", String.Empty);
+
+                string clientHA2String = BitConverter.ToString(clientHA2);
+                clientHA2String = clientHA2String.ToLower();
+                clientHA2String = clientHA2String.Replace("-", String.Empty);
+
+                //string clientHA1String = System.Text.Encoding.ASCII.GetString(clientHA1);
+                //string clientHA2String = System.Text.Encoding.ASCII.GetString(clientHA2);
+
+                string clientResponseString = clientHA1String + ":" + requestParams["nonce"] + ":" + requestParams["nc"] + ":" + requestParams["cnonce"] + ":" + requestParams["qop"] + ":" + clientHA2String;
+
+
+
+                Console.WriteLine("Final Hash = M(" + clientResponseString + ")");
+
+                byte[] clientResponseHA = m_MD5Encoder.ComputeHash(System.Text.Encoding.ASCII.GetBytes(clientResponseString));
+                string clientResponseStringHA = BitConverter.ToString(clientResponseHA);
+                //string clientResponseStringHA = System.Text.Encoding.UTF8.GetString(clientResponseHA);
+
+                clientResponseStringHA = clientResponseStringHA.ToLower();
+                clientResponseStringHA = clientResponseStringHA.Replace("-", String.Empty);
+
+                Console.WriteLine("Server Hash : " + clientResponseStringHA);
+                Console.WriteLine("Client Hash : " + requestParams["response"]);
+
+
+
+
+                /*
+                  HA1 = MD5( "Mufasa:testrealm@host.com:Circle Of Life" )
+       = 939e7578ed9e3c518a452acee763bce9
+
+   HA2 = MD5( "GET:/dir/index.html" )
+       = 39aff3a2bab6126f332b942af96d3366
+
+   Response = MD5( "HA1_Md5:\
+                    nonce:\
+                    nc:cnonce:auth:\
+                    HA2_MD5" )
+            = 6629fae49393a05397450978507c4ef1
+                 */
+
+                // ... request was properly authorized
+                if(clientResponseStringHA.Equals(requestParams["response"]))
+                {
+                    return context;
+                }
+
+                else
+                {
+                    return null;
+                }
+                
             }
 
-
-
-
-            // The request could not be authenticated. No further tries are possible. 
-            return null;
         }
-
+        /*
+        GET /dir/index.html HTTP/1.0
+Host: localhost
+Authorization: Digest username = "Mufasa",
+                     realm = "testrealm@host.com",
+                     nonce = "dcd98b7102dd2f0e8b11d0f600bfb0c093",
+                     uri = "/dir/index.html",
+                     qop = auth,
+                     nc = 00000001,
+                     cnonce = "0a4f113b",
+                     response = "6629fae49393a05397450978507c4ef1",
+                     opaque = "5ccc069c403ebaf9f0171e9517f40e41"
+*/
         private string craftDigestHeader(string desiredRealm, string nonce)
         {
             string response = "Digest realm=\"Login to " + desiredRealm + "\"";
@@ -148,29 +246,46 @@ namespace Pepsin
         private Dictionary<string, string> parseHeader(string authenticateHeader)
         {
             Dictionary<string, string> paramMap = new Dictionary<string, string>();
-
-            authenticateHeader = authenticateHeader.Trim(new Char[] { '"' });
-
+            Console.WriteLine("Header before : " + authenticateHeader);
+            //authenticateHeader = authenticateHeader.Trim(new Char[] { '"' }); /// TODO : That's not how trim works !
+            authenticateHeader = authenticateHeader.Replace("\"", String.Empty);
+            
+            Console.WriteLine("Header after : " + authenticateHeader);
             string[] authenticateParams = authenticateHeader.Split(',');
 
-            foreach (string element in authenticateParams)
+            foreach(string element in authenticateParams)
             {
                 string[] insertedElem = element.Split('=');
+
+                // Concatenate path if "=" char is present. 
+                if(insertedElem.Length > 2)
+                {
+                    for(int i = 2; i < insertedElem.Length; i++)
+                    {
+                        insertedElem[1] += "=" + insertedElem[i];
+                    }
+                }
+
                 // First we must remove "Digest" at the beginning of Digest username
 
-                if (insertedElem[0].Equals("Digest username"))
+                if(insertedElem[0].Equals("Digest username"))
                 {
                     insertedElem[0] = "username";
                 }
 
+                insertedElem[0] = insertedElem[0].Trim();
+
                 paramMap.Add(insertedElem[0], insertedElem[1]);
-
+                
             }
-
+            
             return paramMap;
         }
+
+        
 
 
     }
 }
+
 
