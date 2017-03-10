@@ -30,7 +30,7 @@ using System.Threading.Tasks;
 
 
 
-namespace ScreenCaptureServer.Server
+namespace Digest
 {
     /// <summary>
     /// Pepsin is a middleware that implements Digest Auth without using Microsoft Active Directory
