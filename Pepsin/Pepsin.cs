@@ -274,6 +274,7 @@ namespace Digest
         /// <returns>32 character lowercase hexadecimal nonce</returns>
         private string GenerateNonce()
         {
+            // "N" is used to get lowercase hex
             return Guid.NewGuid().ToString("N");
         }
 
