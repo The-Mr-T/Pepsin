@@ -24,20 +24,29 @@
 
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Text;
-using System.Threading.Tasks;
 
 
 
 namespace Digest
 {
+
     /// <summary>
-    /// Pepsin is a middleware that implements Digest Auth without using Microsoft Active Directory
-    /// for projetcts based on httpListeners. Simply pass it the HttpListenerContext obtained with
-    /// HttpListener.GetContext() method and pepsin will either accept, deny or respond back in order 
-    /// to authenticate the request. 
+    /// State of the nonce. Sent = The nonce has been sent to a client, Retired = The nonce has been used in a successfull auth. 
+    /// It can't be re-used. 
     /// </summary>
+    enum NonceState { Sent, Retired };
+
+
+    /// <summary>
+    /// Pepsin is a middleware that implements Digest Auth without using Microsoft Active Directory.
+    /// </summary>
+    /// Simply pass it the HttpListenerContext obtained with
+    /// HttpListener.GetContext() method and Pepsin will either accept, deny or respond back in order 
+    /// to authenticate the request. 
+    /// 
+    /// Pepsin can either return the context of a valid request, intercept the request and respond to 
+    /// it in order to challenge it or return null in case it's impossible for Pepsin to authenticate it.
     class Pepsin
     {
         // All the availables realms for this digester.
@@ -45,7 +54,7 @@ namespace Digest
         // All nonces. A nonce can either have a have a "Transit" status or an "Accepted" status
         // Once a nonce is accepeted, it cannot be reused and is considered sealed (this is to
         // prevent repeat attacks).
-        private Dictionary<string, string> m_nonces;
+        private Dictionary<string, NonceState> m_nonces;
         // usernames and password. Stored in plaintext due to the way MD5 computes the answer.
         private Dictionary<string, string> m_users;
         // list of realms accesssible by a certain user.
@@ -98,7 +107,7 @@ namespace Digest
             m_userRealms.Add(user, desiredRealms);
         }
 
-        public Pepsin(System.Net.HttpListener listener )
+        public Pepsin(System.Net.HttpListener listener)
         {
             m_listener = listener;
 
@@ -125,7 +134,13 @@ namespace Digest
                 // Construct a response.
                 byte[] buffer = Encoding.UTF8.GetBytes(responseString);
                 response.StatusCode = 401;
-                string digestHeader = craftDigestHeader(System.Environment.MachineName, "1234");
+
+                string nonce = GenerateNonce();
+
+                // check for collision ? 
+                m_nonces.Add(nonce, NonceState.Sent);
+
+                string digestHeader = craftDigestHeader(System.Environment.MachineName, nonce);
                 response.AddHeader("WWW-Authenticate", digestHeader);
                 // Get a response stream and write the response to it.
                 response.ContentLength64 = buffer.Length;
@@ -142,7 +157,17 @@ namespace Digest
             {
                 Dictionary<string, string> requestParams = parseHeader(context.Request.Headers["Authorization"]);
 
-                
+                if (m_nonces[requestParams["nonce"]] == NonceState.Retired)
+                {
+                    // A message with an already used nonce was received. It must be ignored
+                    return null;
+                }
+
+                else
+                {
+                    //we can retire this nonce
+                    m_nonces[requestParams["nonce"]] = NonceState.Retired;
+                }
 
                 string username = requestParams["username"];
 
@@ -153,9 +178,7 @@ namespace Digest
 
                 Console.WriteLine("HA1 = M(" + clientHA1StringData + ")");
 
-                /// TODO : Only GET is supported right now
-
-                string clientHA2StringData = "GET:" + requestParams["uri"];
+                string clientHA2StringData = context.Request.HttpMethod + ":" + requestParams["uri"];
 
                 Console.WriteLine("HA2 = M(" + clientHA2StringData + ")");
 
@@ -170,18 +193,12 @@ namespace Digest
                 clientHA2String = clientHA2String.ToLower();
                 clientHA2String = clientHA2String.Replace("-", String.Empty);
 
-                //string clientHA1String = System.Text.Encoding.ASCII.GetString(clientHA1);
-                //string clientHA2String = System.Text.Encoding.ASCII.GetString(clientHA2);
-
                 string clientResponseString = clientHA1String + ":" + requestParams["nonce"] + ":" + requestParams["nc"] + ":" + requestParams["cnonce"] + ":" + requestParams["qop"] + ":" + clientHA2String;
-
-
 
                 Console.WriteLine("Final Hash = M(" + clientResponseString + ")");
 
                 byte[] clientResponseHA = m_MD5Encoder.ComputeHash(System.Text.Encoding.ASCII.GetBytes(clientResponseString));
                 string clientResponseStringHA = BitConverter.ToString(clientResponseHA);
-                //string clientResponseStringHA = System.Text.Encoding.UTF8.GetString(clientResponseHA);
 
                 clientResponseStringHA = clientResponseStringHA.ToLower();
                 clientResponseStringHA = clientResponseStringHA.Replace("-", String.Empty);
@@ -189,25 +206,8 @@ namespace Digest
                 Console.WriteLine("Server Hash : " + clientResponseStringHA);
                 Console.WriteLine("Client Hash : " + requestParams["response"]);
 
-
-
-
-                /*
-                  HA1 = MD5( "Mufasa:testrealm@host.com:Circle Of Life" )
-       = 939e7578ed9e3c518a452acee763bce9
-
-   HA2 = MD5( "GET:/dir/index.html" )
-       = 39aff3a2bab6126f332b942af96d3366
-
-   Response = MD5( "HA1_Md5:\
-                    nonce:\
-                    nc:cnonce:auth:\
-                    HA2_MD5" )
-            = 6629fae49393a05397450978507c4ef1
-                 */
-
                 // ... request was properly authorized
-                if(clientResponseStringHA.Equals(requestParams["response"]))
+                if (clientResponseStringHA.Equals(requestParams["response"]))
                 {
                     return context;
                 }
@@ -216,23 +216,11 @@ namespace Digest
                 {
                     return null;
                 }
-                
+
             }
 
         }
-        /*
-        GET /dir/index.html HTTP/1.0
-Host: localhost
-Authorization: Digest username = "Mufasa",
-                     realm = "testrealm@host.com",
-                     nonce = "dcd98b7102dd2f0e8b11d0f600bfb0c093",
-                     uri = "/dir/index.html",
-                     qop = auth,
-                     nc = 00000001,
-                     cnonce = "0a4f113b",
-                     response = "6629fae49393a05397450978507c4ef1",
-                     opaque = "5ccc069c403ebaf9f0171e9517f40e41"
-*/
+
         private string craftDigestHeader(string desiredRealm, string nonce)
         {
             string response = "Digest realm=\"Login to " + desiredRealm + "\"";
@@ -247,28 +235,26 @@ Authorization: Digest username = "Mufasa",
         {
             Dictionary<string, string> paramMap = new Dictionary<string, string>();
             Console.WriteLine("Header before : " + authenticateHeader);
-            //authenticateHeader = authenticateHeader.Trim(new Char[] { '"' }); /// TODO : That's not how trim works !
             authenticateHeader = authenticateHeader.Replace("\"", String.Empty);
-            
+
             Console.WriteLine("Header after : " + authenticateHeader);
             string[] authenticateParams = authenticateHeader.Split(',');
 
-            foreach(string element in authenticateParams)
+            foreach (string element in authenticateParams)
             {
                 string[] insertedElem = element.Split('=');
 
                 // Concatenate path if "=" char is present. 
-                if(insertedElem.Length > 2)
+                if (insertedElem.Length > 2)
                 {
-                    for(int i = 2; i < insertedElem.Length; i++)
+                    for (int i = 2; i < insertedElem.Length; i++)
                     {
                         insertedElem[1] += "=" + insertedElem[i];
                     }
                 }
 
                 // First we must remove "Digest" at the beginning of Digest username
-
-                if(insertedElem[0].Equals("Digest username"))
+                if (insertedElem[0].Equals("Digest username"))
                 {
                     insertedElem[0] = "username";
                 }
@@ -276,16 +262,23 @@ Authorization: Digest username = "Mufasa",
                 insertedElem[0] = insertedElem[0].Trim();
 
                 paramMap.Add(insertedElem[0], insertedElem[1]);
-                
+
             }
-            
+
             return paramMap;
         }
 
-        
-
+        /// <summary>
+        /// Generates a 32 character lowercase hexadecimal nonce. 
+        /// </summary>
+        /// <returns>32 character lowercase hexadecimal nonce</returns>
+        private string GenerateNonce()
+        {
+            return Guid.NewGuid().ToString("N");
+        }
 
     }
 }
+
 
 
