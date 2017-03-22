@@ -54,7 +54,7 @@ namespace Digest
         // All nonces. A nonce can either have a have a "Transit" status or an "Accepted" status
         // Once a nonce is accepeted, it cannot be reused and is considered sealed (this is to
         // prevent repeat attacks).
-        private Dictionary<string, NonceState> m_nonces;
+        private Dictionary<string, string> m_nonces;
         // usernames and password. Stored in plaintext due to the way MD5 computes the answer.
         private Dictionary<string, string> m_users;
         // list of realms accesssible by a certain user.
@@ -107,7 +107,7 @@ namespace Digest
             m_userRealms.Add(user, desiredRealms);
         }
 
-        public Pepsin(System.Net.HttpListener listener)
+        public Pepsin(System.Net.HttpListener listener )
         {
             m_listener = listener;
 
@@ -134,13 +134,7 @@ namespace Digest
                 // Construct a response.
                 byte[] buffer = Encoding.UTF8.GetBytes(responseString);
                 response.StatusCode = 401;
-
-                string nonce = GenerateNonce();
-
-                // check for collision ? 
-                m_nonces.Add(nonce, NonceState.Sent);
-
-                string digestHeader = craftDigestHeader(System.Environment.MachineName, nonce);
+                string digestHeader = craftDigestHeader(System.Environment.MachineName, GenerateNonce());
                 response.AddHeader("WWW-Authenticate", digestHeader);
                 // Get a response stream and write the response to it.
                 response.ContentLength64 = buffer.Length;
@@ -157,17 +151,7 @@ namespace Digest
             {
                 Dictionary<string, string> requestParams = parseHeader(context.Request.Headers["Authorization"]);
 
-                if (m_nonces[requestParams["nonce"]] == NonceState.Retired)
-                {
-                    // A message with an already used nonce was received. It must be ignored
-                    return null;
-                }
-
-                else
-                {
-                    //we can retire this nonce
-                    m_nonces[requestParams["nonce"]] = NonceState.Retired;
-                }
+                
 
                 string username = requestParams["username"];
 
@@ -178,7 +162,7 @@ namespace Digest
 
                 Console.WriteLine("HA1 = M(" + clientHA1StringData + ")");
 
-                string clientHA2StringData = context.Request.HttpMethod + ":" + requestParams["uri"];
+                string clientHA2StringData = context.Request.HttpMethod.ToUpper() + ":" + requestParams["uri"];
 
                 Console.WriteLine("HA2 = M(" + clientHA2StringData + ")");
 
@@ -194,7 +178,7 @@ namespace Digest
                 clientHA2String = clientHA2String.Replace("-", String.Empty);
 
                 string clientResponseString = clientHA1String + ":" + requestParams["nonce"] + ":" + requestParams["nc"] + ":" + requestParams["cnonce"] + ":" + requestParams["qop"] + ":" + clientHA2String;
-
+                
                 Console.WriteLine("Final Hash = M(" + clientResponseString + ")");
 
                 byte[] clientResponseHA = m_MD5Encoder.ComputeHash(System.Text.Encoding.ASCII.GetBytes(clientResponseString));
@@ -203,11 +187,11 @@ namespace Digest
                 clientResponseStringHA = clientResponseStringHA.ToLower();
                 clientResponseStringHA = clientResponseStringHA.Replace("-", String.Empty);
 
-                Console.WriteLine("Server Hash : " + clientResponseStringHA);
-                Console.WriteLine("Client Hash : " + requestParams["response"]);
+                Console.WriteLine("[DIGEST] - Server Hash : " + clientResponseStringHA);
+                Console.WriteLine("[DIGEST] - Client Hash : " + requestParams["response"]);
 
                 // ... request was properly authorized
-                if (clientResponseStringHA.Equals(requestParams["response"]))
+                if(clientResponseStringHA.Equals(requestParams["response"]))
                 {
                     return context;
                 }
@@ -216,7 +200,7 @@ namespace Digest
                 {
                     return null;
                 }
-
+                
             }
 
         }
@@ -236,25 +220,25 @@ namespace Digest
             Dictionary<string, string> paramMap = new Dictionary<string, string>();
             Console.WriteLine("Header before : " + authenticateHeader);
             authenticateHeader = authenticateHeader.Replace("\"", String.Empty);
-
+            
             Console.WriteLine("Header after : " + authenticateHeader);
             string[] authenticateParams = authenticateHeader.Split(',');
 
-            foreach (string element in authenticateParams)
+            foreach(string element in authenticateParams)
             {
                 string[] insertedElem = element.Split('=');
 
                 // Concatenate path if "=" char is present. 
-                if (insertedElem.Length > 2)
+                if(insertedElem.Length > 2)
                 {
-                    for (int i = 2; i < insertedElem.Length; i++)
+                    for(int i = 2; i < insertedElem.Length; i++)
                     {
                         insertedElem[1] += "=" + insertedElem[i];
                     }
                 }
 
                 // First we must remove "Digest" at the beginning of Digest username
-                if (insertedElem[0].Equals("Digest username"))
+                if(insertedElem[0].Equals("Digest username"))
                 {
                     insertedElem[0] = "username";
                 }
@@ -262,9 +246,9 @@ namespace Digest
                 insertedElem[0] = insertedElem[0].Trim();
 
                 paramMap.Add(insertedElem[0], insertedElem[1]);
-
+                
             }
-
+            
             return paramMap;
         }
 
@@ -274,12 +258,8 @@ namespace Digest
         /// <returns>32 character lowercase hexadecimal nonce</returns>
         private string GenerateNonce()
         {
-            // "N" is used to get lowercase hex
             return Guid.NewGuid().ToString("N");
         }
 
     }
 }
-
-
-
