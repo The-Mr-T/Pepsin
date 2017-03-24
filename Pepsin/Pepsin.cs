@@ -114,17 +114,33 @@ namespace Digest
             if (m_users.ContainsKey(username)) { m_users.Remove(username); } else throw new ArgumentException();
             
         }
-        /*
+        
         public void changePassword(string username, string newPassword)
         {
             if (m_users.ContainsKey(username))
             {
+                Password pass;
+                pass.content = newPassword;
+                pass.type = PasswordType.PlainText;
                 m_users.Remove(username);
-                m_users.Add(username, newPassword);
+                m_users.Add(username, pass);
             }
             else { throw new ArgumentException(); }
         }
-        */
+
+        public void changePasswordH(string username, string newPassword)
+        {
+            if (m_users.ContainsKey(username))
+            {
+                Password pass;
+                pass.content = newPassword;
+                pass.type = PasswordType.Hashed;
+                m_users.Remove(username);
+                m_users.Add(username, pass);
+            }
+            else { throw new ArgumentException(); }
+        }
+
         public void addRealm(string realm)
         {
             // Only a collection of realms, no attached value for now. 
@@ -196,8 +212,6 @@ namespace Digest
             else // An Authorization header was present, there is digest data to analyse. 
             {
                 Dictionary<string, string> requestParams = parseHeader(context.Request.Headers["Authorization"]);
-
-
 
                 string username = requestParams["username"];
 
