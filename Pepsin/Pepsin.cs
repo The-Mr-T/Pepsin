@@ -51,12 +51,25 @@ namespace Digest
     {
         // All the availables realms for this digester.
         private Dictionary<string, string> m_realms;
+
+
         // All nonces. A nonce can either have a have a "Transit" status or an "Accepted" status
         // Once a nonce is accepeted, it cannot be reused and is considered sealed (this is to
         // prevent repeat attacks).
         private Dictionary<string, string> m_nonces;
-        // usernames and password. Stored in plaintext due to the way MD5 computes the answer.
-        private Dictionary<string, string> m_users;
+
+
+        
+        public enum PasswordType { PlainText, Hashed };
+        public struct Password
+        {
+            public PasswordType type;
+            public string content;
+        }
+        
+        private Dictionary<string, Password> m_users;
+
+
         // list of realms accesssible by a certain user.
         private Dictionary<string, string[]> m_userRealms;
 
@@ -73,23 +86,45 @@ namespace Digest
         /// <param name="password">password (in plaintext)</param>
         public void addUser(string username, string password)
         {
-            /// TODO : Exception handling for already existing users. 
-            m_users.Add(username, password);
+            if (!m_users.ContainsKey(username))
+            {
+                Password pass;
+                pass.type = PasswordType.PlainText;
+                pass.content = password;
+                m_users.Add(username, pass);
+            }
+            else { throw new ArgumentException(); }
+        }
+
+        public void addUserH(string username, string passwordH)
+        {
+            if (!m_users.ContainsKey(username))
+            {
+                Password pass;
+                pass.type = PasswordType.Hashed;
+                pass.content = generateHash(username, passwordH);
+                m_users.Add(username, pass);
+            }
+            else { throw new ArgumentException(); }
         }
 
         public void removeUser(string username)
         {
-            /// TODO : Exception handling for non-existing users
-            m_users.Remove(username);
+            
+            if (m_users.ContainsKey(username)) { m_users.Remove(username); } else throw new ArgumentException();
+            
         }
-
+        /*
         public void changePassword(string username, string newPassword)
         {
-            /// TODO : Exception handling for non-existing users
-            m_users.Remove(username);
-            m_users.Add(username, newPassword);
+            if (m_users.ContainsKey(username))
+            {
+                m_users.Remove(username);
+                m_users.Add(username, newPassword);
+            }
+            else { throw new ArgumentException(); }
         }
-
+        */
         public void addRealm(string realm)
         {
             // Only a collection of realms, no attached value for now. 
@@ -98,23 +133,34 @@ namespace Digest
 
         public void removeRealm(string realm)
         {
-            m_realms.Remove(realm);
+            if (m_realms.ContainsKey(realm))
+            {
+                m_realms.Remove(realm);
+            }
+            else { throw new ArgumentException(); }
+            
         }
 
         public void addPermission(string user, string[] desiredRealms)
         {
-            /// TODO : Check realms for validity
-            m_userRealms.Add(user, desiredRealms);
+            if (m_users.ContainsKey(user))
+            {
+                if(m_realms.ContainsKey(desiredRealms[0]))
+                {
+                    m_userRealms.Add(user, desiredRealms);
+                }
+            }
+            else { throw new ArgumentException();  }
         }
 
-        public Pepsin(System.Net.HttpListener listener )
+        public Pepsin(System.Net.HttpListener listener)
         {
             m_listener = listener;
 
             m_nonces = new Dictionary<string, string>();
             m_realms = new Dictionary<string, string>();
             m_userRealms = new Dictionary<string, string[]>();
-            m_users = new Dictionary<string, string>();
+            m_users = new Dictionary<string, Password>();
 
             m_MD5Encoder = new System.Security.Cryptography.MD5Cng();
         }
@@ -151,14 +197,21 @@ namespace Digest
             {
                 Dictionary<string, string> requestParams = parseHeader(context.Request.Headers["Authorization"]);
 
-                
+
 
                 string username = requestParams["username"];
 
                 Console.WriteLine(requestParams["realm"]);
                 Console.WriteLine(m_users[username]);
-
-                string clientHA1StringData = username + ":" + requestParams["realm"] + ":" + m_users[username];
+                string clientHA1StringData;
+                if (m_users[username].type == PasswordType.PlainText)
+                {
+                    clientHA1StringData = username + ":" + requestParams["realm"] + ":" + m_users[username];
+                }
+                else
+                {
+                    clientHA1StringData = m_users[username].content;
+                }
 
                 Console.WriteLine("HA1 = M(" + clientHA1StringData + ")");
 
@@ -178,7 +231,7 @@ namespace Digest
                 clientHA2String = clientHA2String.Replace("-", String.Empty);
 
                 string clientResponseString = clientHA1String + ":" + requestParams["nonce"] + ":" + requestParams["nc"] + ":" + requestParams["cnonce"] + ":" + requestParams["qop"] + ":" + clientHA2String;
-                
+
                 Console.WriteLine("Final Hash = M(" + clientResponseString + ")");
 
                 byte[] clientResponseHA = m_MD5Encoder.ComputeHash(System.Text.Encoding.ASCII.GetBytes(clientResponseString));
@@ -191,7 +244,7 @@ namespace Digest
                 Console.WriteLine("[DIGEST] - Client Hash : " + requestParams["response"]);
 
                 // ... request was properly authorized
-                if(clientResponseStringHA.Equals(requestParams["response"]))
+                if (clientResponseStringHA.Equals(requestParams["response"]))
                 {
                     return context;
                 }
@@ -200,7 +253,7 @@ namespace Digest
                 {
                     return null;
                 }
-                
+
             }
 
         }
@@ -215,30 +268,43 @@ namespace Digest
             return response;
         }
 
+        private string generateHash(string username, string password)
+        {
+            string clientHA1StringData = username + ":" + System.Environment.MachineName + ":" + password;
+
+            byte[] clientHA1 = m_MD5Encoder.ComputeHash(System.Text.Encoding.ASCII.GetBytes(clientHA1StringData));
+
+            string clientHA1String = BitConverter.ToString(clientHA1);
+            clientHA1String = clientHA1String.ToLower();
+            clientHA1String = clientHA1String.Replace("-", String.Empty);
+
+            return clientHA1String;
+        }
+
         private Dictionary<string, string> parseHeader(string authenticateHeader)
         {
             Dictionary<string, string> paramMap = new Dictionary<string, string>();
             Console.WriteLine("Header before : " + authenticateHeader);
             authenticateHeader = authenticateHeader.Replace("\"", String.Empty);
-            
+
             Console.WriteLine("Header after : " + authenticateHeader);
             string[] authenticateParams = authenticateHeader.Split(',');
 
-            foreach(string element in authenticateParams)
+            foreach (string element in authenticateParams)
             {
                 string[] insertedElem = element.Split('=');
 
                 // Concatenate path if "=" char is present. 
-                if(insertedElem.Length > 2)
+                if (insertedElem.Length > 2)
                 {
-                    for(int i = 2; i < insertedElem.Length; i++)
+                    for (int i = 2; i < insertedElem.Length; i++)
                     {
                         insertedElem[1] += "=" + insertedElem[i];
                     }
                 }
 
                 // First we must remove "Digest" at the beginning of Digest username
-                if(insertedElem[0].Equals("Digest username"))
+                if (insertedElem[0].Equals("Digest username"))
                 {
                     insertedElem[0] = "username";
                 }
@@ -246,9 +312,9 @@ namespace Digest
                 insertedElem[0] = insertedElem[0].Trim();
 
                 paramMap.Add(insertedElem[0], insertedElem[1]);
-                
+
             }
-            
+
             return paramMap;
         }
 
